@@ -14,7 +14,7 @@ def load_schematic(filename: str) -> Optional[nbtlib.File]:
     """
     if filename.split(".")[-1] != "schem":
         return None
-    return nbtlib.load(filename)
+    return nbtlib.load(filename,gzipped=True)
 
 
 def get_local_coordinate(index: int, width: int, length: int) -> Tuple[int, int, int]:
@@ -101,5 +101,3 @@ def get_global_coordinates(
         relativeCoordinates[1] + originY,
         relativeCoordinates[2] + originZ,
     )
-
-
