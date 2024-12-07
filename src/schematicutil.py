@@ -20,6 +20,10 @@ def load_schematic(filename: str) -> Optional[nbtlib.File]:
 def get_block_data(file: nbtlib.tag.Compound) -> nbtlib.tag.Compound:
     return file["Schematic"]["Blocks"]
 
+def get_entities(file: nbtlib.tag.List) -> nbtlib.tag.List:
+    if "Entities" in  file["Schematic"]:
+        return file["Schematic"]["Entities"]
+    else: return nbtlib.tag.List([])
 
 def get_dimension(
     file: nbtlib.tag.Compound,

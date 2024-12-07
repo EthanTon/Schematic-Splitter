@@ -1,6 +1,7 @@
 from math import ceil
 import os
 import nbtlib
+from numpy import double
 import schematicutil
 import varintIterator
 import varintWriter
@@ -40,37 +41,113 @@ class SchematicSplitter:
         return chunk_width, chunk_height, chunk_length
 
     def split_schematic(self, filename, output_directory="Output", output_name="Out"):
-        file = schematicutil.load_schematic(filename)
+        source_file = schematicutil.load_schematic(filename)
 
         # Get dimensions
-        width, height, length = schematicutil.get_dimension(file)
-        width, height, length = int(width), int(height), int(length)
-
-        # Get offset
-        offset_x, offset_y, offset_z = schematicutil.get_offset(file)
-        offset_x, offset_y, offset_z = int(offset_x), int(offset_y), int(offset_z)
-
-        chunk_width, chunk_height, chunk_length = self.get_chunk_dimensions(
-            width, height, length
+        source_width, source_height, source_length = schematicutil.get_dimension(
+            source_file
+        )
+        source_width, source_height, source_length = (
+            int(source_width),
+            int(source_height),
+            int(source_length),
         )
 
-        chunk_x = int(ceil(width / chunk_width))
-        # chunk_y = int(ceil(height / chunk_height))
-        chunk_z = int(ceil(length / chunk_length))
+        # Get offset
+        source_offset_x, source_offset_y, source_offset_z = schematicutil.get_offset(
+            source_file
+        )
+        source_offset_x, source_offset_y, source_offset_z = (
+            int(source_offset_x),
+            int(source_offset_y),
+            int(source_offset_z),
+        )
 
-        blocks = schematicutil.get_block_data(file)
+        max_chunk_width, max_chunk_height, max_chunk_length = self.get_chunk_dimensions(
+            source_width, source_height, source_length
+        )
 
-        source_data = blocks["Data"]
+        chunk_width = int(ceil(source_width / max_chunk_width))
+        # chunk_height = int(ceil(source_height / max_chunk_height))
+        chunk_length = int(ceil(source_length / max_chunk_length))
+
+        source_blocks = schematicutil.get_block_data(source_file)
+        source_entities = schematicutil.get_entities(source_file)
+
+        source_data = source_blocks["Data"]
         block_data = bytes(block & 0xFF for block in source_data)
-        source_palette = schematicutil.swap_palette(dict(blocks["Palette"]))
-
-        block_entities = blocks["BlockEntities"]
+        source_palette = schematicutil.swap_palette(dict(source_blocks["Palette"]))
+        source_block_entities = source_blocks["BlockEntities"]
 
         chunk = {0: []}
-        chunk_offset = {0: [offset_x, offset_y, offset_z]}
-        chunk_dimensions = {0: [chunk_width, chunk_height, chunk_length]}
+        chunk_offset = {0: [source_offset_x, source_offset_y, source_offset_z]}
+        chunk_dimensions = {0: [max_chunk_width, max_chunk_height, max_chunk_length]}
         chunk_palette = {0: {}}
+        chunk_block_entities = {}
+        chunk_entities = {}
 
+        # Entity Handler
+        for item in source_entities:
+            pos = item["Pos"]
+
+            source_x, source_y, source_z = (
+                double(pos[0]),
+                double(pos[1]),
+                double(pos[2]),
+            )
+
+            chunk_x = int(source_x // max_chunk_width)
+            chunk_y = int(source_y // max_chunk_height)
+            chunk_z = int(source_z // max_chunk_length)
+
+            file_number = schematicutil.get_index(
+                chunk_x,
+                chunk_y,
+                chunk_z,
+                chunk_width,
+                chunk_length,
+            )
+
+            x = nbtlib.Double(source_x - (chunk_x * max_chunk_width))
+            y = nbtlib.Double(source_y - (chunk_y * max_chunk_height))
+            z = nbtlib.Double(source_z - (chunk_z * max_chunk_length))
+
+            if not file_number in chunk_entities:
+                chunk_entities[file_number] = []
+
+            item["Pos"] = nbtlib.List([x, y, z])
+            print(file_number)
+            chunk_entities[file_number].append(nbtlib.Compound(item))
+
+        # Block Entity Handler
+        for item in source_block_entities:
+            pos = item["Pos"]
+
+            source_x, source_y, source_z = int(pos[0]), int(pos[1]), int(pos[2])
+
+            chunk_x = source_x // max_chunk_width
+            chunk_y = source_y // max_chunk_height
+            chunk_z = source_z // max_chunk_length
+
+            file_number = schematicutil.get_index(
+                chunk_x,
+                chunk_y,
+                chunk_z,
+                chunk_width,
+                chunk_length,
+            )
+
+            x = source_x % max_chunk_width
+            y = source_y % max_chunk_height
+            z = source_z % max_chunk_length
+
+            if not file_number in chunk_block_entities:
+                chunk_block_entities[file_number] = []
+
+            item["Pos"] = nbtlib.tag.IntArray([x, y, z])
+            chunk_block_entities[file_number].append(nbtlib.Compound(item))
+
+        # Block and Palette Handler
         source_index = 0
 
         iter = varintIterator.VarIntIterator(block_data)
@@ -78,31 +155,33 @@ class SchematicSplitter:
         has_next = iter.has_next()
         while has_next:
 
-            x, y, z = schematicutil.get_local_coordinate(source_index, width, length)
-
-            new_x = x // chunk_width
-            new_y = y // chunk_height
-            new_z = z // chunk_length
-
-            file_number = schematicutil.get_index(
-                new_x,
-                new_y,
-                new_z,
-                chunk_x,
-                chunk_z,
+            source_x, source_y, source_z = schematicutil.get_local_coordinate(
+                source_index, source_width, source_length
             )
 
-            x_width = (x % chunk_width) + 1
-            y_height = (y % chunk_height) + 1
-            z_length = (z % chunk_length) + 1
+            chunk_x = source_x // max_chunk_width
+            chunk_y = source_y // max_chunk_height
+            chunk_z = source_z // max_chunk_length
+
+            file_number = schematicutil.get_index(
+                chunk_x,
+                chunk_y,
+                chunk_z,
+                chunk_width,
+                chunk_length,
+            )
+
+            x_width = (source_x % max_chunk_width) + 1
+            y_height = (source_y % max_chunk_height) + 1
+            z_length = (source_z % max_chunk_length) + 1
 
             if not file_number in chunk:
                 chunk[file_number] = []
                 chunk_palette[file_number] = {}
                 chunk_offset[file_number] = [
-                    (x + offset_x),
-                    (y + offset_y),
-                    (z + offset_z),
+                    (source_x + source_offset_x),
+                    (source_y + source_offset_y),
+                    (source_z + source_offset_z),
                 ]
                 chunk_dimensions[file_number] = [
                     x_width,
@@ -131,15 +210,11 @@ class SchematicSplitter:
             has_next = iter.has_next()
             source_index += 1
 
-        # print(chunk_palette[0])
-
-        # print(chunk)
-
         # Make new files
 
         for file_num in chunk.keys():
 
-            output = file
+            output = source_file
 
             output["Schematic"]["Width"] = nbtlib.Short(chunk_dimensions[file_num][0])
             output["Schematic"]["Height"] = nbtlib.Short(chunk_dimensions[file_num][1])
@@ -151,6 +226,17 @@ class SchematicSplitter:
             #     output["Schematic"]["Height"],
             #     output["Schematic"]["Length"],
             # )
+            if file_num in chunk_block_entities:
+                output["Schematic"]["Blocks"]["BlockEntities"] = nbtlib.List(
+                    chunk_block_entities[file_num]
+                )
+            else:
+                output["Schematic"]["Blocks"]["BlockEntities"] = nbtlib.List([])
+
+            if file_num in chunk_entities:
+                output["Schematic"]["Entities"] = nbtlib.List(chunk_entities[file_num])
+            else:
+                output["Schematic"]["Entities"] = nbtlib.List([])
 
             output["Schematic"]["Blocks"]["Data"] = nbtlib.ByteArray(
                 varintWriter.write(
@@ -160,6 +246,7 @@ class SchematicSplitter:
                     chunk_dimensions[file_num][2],
                 )
             )
+
             output["Schematic"]["Blocks"]["Palette"] = nbtlib.Compound(
                 chunk_palette[file_num]
             )
