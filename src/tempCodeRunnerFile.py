@@ -1,0 +1,1 @@
+print(file_num,output["Schematic"]["Width"],output["Schematic"]["Height"],output["Schematic"]["Length"])

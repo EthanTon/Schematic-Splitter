@@ -1,5 +1,5 @@
 import nbtlib
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
 
 
 def load_schematic(filename: str) -> Optional[nbtlib.File]:
@@ -14,7 +14,31 @@ def load_schematic(filename: str) -> Optional[nbtlib.File]:
     """
     if filename.split(".")[-1] != "schem":
         return None
-    return nbtlib.load(filename,gzipped=True)
+    return nbtlib.load(filename, gzipped=True)
+
+
+def get_block_data(file: nbtlib.tag.Compound) -> nbtlib.tag.Compound:
+    return file["Schematic"]["Blocks"]
+
+
+def get_dimension(
+    file: nbtlib.tag.Compound,
+) -> Tuple[nbtlib.tag.Short, nbtlib.tag.Short, nbtlib.tag.Short]:
+    width = file["Schematic"]["Width"]
+    height = file["Schematic"]["Height"]
+    length = file["Schematic"]["Length"]
+
+    return (width, height, length)
+
+
+def get_offset(
+    file: nbtlib.tag.Compound,
+) -> Tuple[nbtlib.tag.Int, nbtlib.tag.Int, nbtlib.tag.Int]:
+    offsetX = file["Schematic"]["Offset"][0]
+    offsetY = file["Schematic"]["Offset"][1]
+    offsetZ = file["Schematic"]["Offset"][2]
+
+    return (offsetX, offsetY, offsetZ)
 
 
 def get_local_coordinate(index: int, width: int, length: int) -> Tuple[int, int, int]:
@@ -29,9 +53,9 @@ def get_local_coordinate(index: int, width: int, length: int) -> Tuple[int, int,
     Returns:
         Tuple[int, int, int]: (x, y, z) local coordinates
     """
-    localX = index % width
-    localZ = (index // width) % length
-    localY = index // (width * length)
+    localY = int(index / (width * length))
+    localZ = int((index % (width * length)) / width)
+    localX = int((index % (width * length)) % width)
     return (localX, localY, localZ)
 
 

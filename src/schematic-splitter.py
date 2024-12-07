@@ -1,213 +1,148 @@
-from math import ceil, floor
+from math import ceil
 import os
 import nbtlib
 import schematicutil
+import varintIterator
 
 
 class SchematicSplitter:
     def __init__(self, block_limit: int):
         self.block_limit = block_limit
 
-    def get_source_index(self, x, y, z, width, length):
+    def get_index(self, x, y, z, width, length):
         """Calculate the correct index in the block array using full dimensions"""
-        return x + z * width + y * width * length
+        return int(x + z * width + y * width * length)
 
-    def get_blockentities_in_region(
-        self,
-        blockEntities,
-        startX,
-        startY,
-        startZ,
-        width,
-        height,
-        length,
-        offsetX,
-        offsetY,
-        offsetZ
-    ):
-        """
-        Extract BlockEntities that fall within the specified chunk region
-        and adjust their positions relative to the new chunk.
-        """
-        chunk_blockentities = []
-        
-        for blockEntity in blockEntities:
-            pos = blockEntity.get('Pos', [0, 0, 0])
-            x, y, z = pos
-            
-            # Check if BlockEntity is within chunk bounds
-            if (startX <= x < startX + width and
-                startY <= y < startY + height and
-                startZ <= z < startZ + length):
-                
-                # Create a copy of the BlockEntity
-                new_blockentity = blockEntity.copy()
-                
-                # Adjust position relative to chunk
-                new_pos = [
-                    x - startX,
-                    y - startY,
-                    z - startZ
-                ]
-                new_blockentity['Pos'] = nbtlib.IntArray(new_pos)
-                
-                chunk_blockentities.append(new_blockentity)
-        
-        return chunk_blockentities
+    def split_schematic(self, filename, output_directory="Output", output_name="Out"):
+        file = schematicutil.load_schematic(filename)
 
-    def copy_chunk(
-        self,
-        data,
-        width,
-        length,
-        chunkWidth,
-        chunkHeight,
-        chunkLength,
-        offsetWidth,
-        offsetHeight,
-        offsetLength,
-    ):
-        chunk = [0] * (chunkWidth * chunkLength * chunkHeight)
+        print(file.gzipped)
 
-        # Iterate in Y,Z,X order to match schematic format
-        for y in range(chunkHeight):
-            absolute_y = y + offsetHeight
-            for z in range(chunkLength):
-                absolute_z = z + offsetLength
-                for x in range(chunkWidth):
-                    absolute_x = x + offsetWidth
+        # Get dimensions
+        width, height, length = schematicutil.get_dimension(file)
+        width, height, length = int(width), int(height), int(length)
 
-                    source_index = self.get_source_index(
-                        absolute_x, absolute_y, absolute_z, width, length
-                    )
+        # Get offset
+        offset_x, offset_y, offset_z = schematicutil.get_offset(file)
+        offset_x, offset_y, offset_z = int(offset_x), int(offset_y), int(offset_z)
 
-                    index = self.get_source_index(x, y, z, chunkWidth, chunkLength)
-
-                    chunk[index] = data[source_index]
-
-        return chunk
-
-    def split_schematic(
-        self, inputFile: str, outputFile: str = "Out", outputDirectory: str = "Output"
-    ):
-        file = schematicutil.load_schematic(inputFile)
-
-        schematic = file["Schematic"]
-
-        # Get data and amount of blocks(size)
-        data = schematic["Blocks"]["Data"]
-        size = len(data)
-
-        print(type(data))
-
+        size = width * height * length
         if size <= self.block_limit:
-            print("File does not need to be split")
-            return
+            # If original size is within limits, keep original dimensions
+            chunk_width = width
+            chunk_height = height
+            chunk_length = length
+        else:
+            # Calculate dimensions to get close to block_limit
+            ratio = (self.block_limit / size) ** (1/3)
+    
+            # Initial chunk sizes
+            chunk_width = max(1, ceil(width * ratio))
+            chunk_height = max(1, ceil(height * ratio))
+            chunk_length = max(1, ceil(length * ratio))
+    
+            # Iteratively reduce dimensions if still over block limit
+            while (chunk_width * chunk_height * chunk_length) > self.block_limit:
+                max_dim = max(chunk_width, chunk_height, chunk_length)
+                if chunk_width == max_dim:
+                    chunk_width = max(1, chunk_width - 1)
+                elif chunk_height == max_dim:
+                    chunk_height = max(1, chunk_height - 1)
+                else:
+                    chunk_length = max(1, chunk_length - 1)
 
-        # Get dimensions from schematic
-        width = schematic["Width"]
-        height = schematic["Height"]
-        length = schematic["Length"]
 
-        # Calculate dimensions that won't exceed block limit
-        targetVolume = min(self.block_limit, width * height * length)
-        splitFactor = (targetVolume / (width * height * length)) ** (1 / 3)
+        chunk_x = int(ceil(width / chunk_width))
+        # chunk_y = int(ceil(height / chunk_height))
+        chunk_z = int(ceil(length / chunk_length))
 
-        # Determine new dimension for each chunk
-        chunkWidth = max(1, floor(width * splitFactor))
-        chunkHeight = max(1, floor(height * splitFactor))
-        chunkLength = max(1, floor(length * splitFactor))
+        blocks = schematicutil.get_block_data(file)
 
-        numberOfChunkWidth = ceil(width / chunkWidth)
-        numberOfChunkHeight = ceil(height / chunkHeight)
-        numberOfChunkLength = ceil(length / chunkLength)
+        block_entities = blocks["BlockEntities"]
+        source_data = blocks["Data"]
+        source_palette = blocks["Palette"]
 
-        print(f"Splitting into chunks of {chunkWidth}x{chunkHeight}x{chunkLength}")
-        print(
-            f"Number of chunks: {numberOfChunkWidth}x{numberOfChunkHeight}x{numberOfChunkLength}"
-        )
+        chunk = {0: []}
+        chunk_offset = {0: [offset_x, offset_y, offset_z]}
+        chunk_dimensions = {0: [chunk_width, chunk_height, chunk_length]}
 
-        # Get palette and block entities
-        palette = schematic["Blocks"]["Palette"]
-        blockEntities = schematic["Blocks"].get("BlockEntities", [])
+        source_index = 0
+        block_data = bytes(block & 0xFF for block in source_data)
+        iter = varintIterator.VarIntIterator(block_data)
 
-        # Get offset from schematic
-        offset = schematic["Offset"]
+        has_next = iter.has_next()
 
-        offsetX = int(offset[0])
-        offsetY = int(offset[1])
-        offsetZ = int(offset[2])
 
-        if not os.path.isdir(outputDirectory):
-            os.mkdir(outputDirectory)
+        while(has_next):
+            new_block_id = iter.__next__()
 
-        fileNumber = 0
+            x, y, z = schematicutil.get_local_coordinate(source_index, width, length)
 
-        # Standard Chunks
-        for j in range(numberOfChunkHeight):
-            startY = j * chunkHeight
-            actual_height = min(chunkHeight, height - startY)
+            new_x = x // chunk_width
+            new_y = y // chunk_height
+            new_z = z // chunk_length
 
-            for k in range(numberOfChunkLength):
-                startZ = k * chunkLength
-                actual_length = min(chunkLength, length - startZ)
+            file_number = self.get_index(
+                new_x,
+                new_y,
+                new_z,
+                chunk_x,
+                chunk_z,
+            )
 
-                for i in range(numberOfChunkWidth):
-                    startX = i * chunkWidth
-                    actual_width = min(chunkWidth, width - startX)
+            x_width = (x % chunk_width) + 1
+            y_height = (y % chunk_height) + 1
+            z_length = (z % chunk_length) + 1
 
-                    if actual_width <= 0 or actual_height <= 0 or actual_length <= 0:
-                        continue
+            if not file_number in chunk:
+                chunk[file_number] = []
+                chunk_offset[file_number] = [
+                    (x + offset_x),
+                    (y + offset_y),
+                    (z + offset_z),
+                ]
+                chunk_dimensions[file_number] = [
+                    x_width,
+                    y_height,
+                    z_length,
+                ]
 
-                    chunk = self.copy_chunk(
-                        data,
-                        width,
-                        length,
-                        actual_width,
-                        actual_height,
-                        actual_length,
-                        startX,
-                        startY,
-                        startZ,
-                    )
+            # Update maximum dimensions for the current file's chunk
+            chunk_dimensions[file_number] = [
+                int(max(x_width, chunk_dimensions[file_number][0])),
+                int(max(y_height, chunk_dimensions[file_number][1])),
+                int(max(z_length, chunk_dimensions[file_number][2])),
+            ]
 
-                    # Calculate offset for this chunk
-                    chunkOffset = [
-                        offsetX + (i * chunkWidth),
-                        offsetY + (j * chunkHeight),
-                        offsetZ + (k * chunkLength),
-                    ]
+            chunk[file_number].append(source_data[source_index])
 
-                    # Handle BlockEntities for this chunk
-                    chunk_blockentities = self.get_blockentities_in_region(
-                        blockEntities,
-                        startX,
-                        startY,
-                        startZ,
-                        actual_width,
-                        actual_height,
-                        actual_length,
-                        chunkOffset[0],
-                        chunkOffset[1],
-                        chunkOffset[2]
-                    )
-                    # Create output schematic
-                    output = file
-                    output["Schematic"]["Width"] = nbtlib.Short(actual_width)
-                    output["Schematic"]["Height"] = nbtlib.Short(actual_height)
-                    output["Schematic"]["Length"] = nbtlib.Short(actual_length)
-                    output["Schematic"]["Blocks"]["Data"] = nbtlib.ByteArray(chunk)
-                    output["Schematic"]["Blocks"]["BlockEntities"] = nbtlib.List[nbtlib.Compound](chunk_blockentities)
-                    output["Schematic"]["Blocks"]["Palette"] = palette
-                    output["Schematic"]["Offset"] = nbtlib.IntArray(chunkOffset)
+            has_next = iter.has_next()
+            source_index += 1
 
-                    # Save chunk
-                    outputLocation = os.path.join(
-                        outputDirectory, f"{outputFile}{fileNumber}.schem"
-                    )
+        # Make new files
 
-                    output.save(outputLocation, gzipped=True)
-                    fileNumber += 1
+        for file_num in chunk.keys():
+
+            output = file
+
+            output["Schematic"]["Width"] = nbtlib.Short(chunk_dimensions[file_num][0])
+            output["Schematic"]["Height"] = nbtlib.Short(chunk_dimensions[file_num][1])
+            output["Schematic"]["Length"] = nbtlib.Short(chunk_dimensions[file_num][2])
+
+            print(file_num,output["Schematic"]["Width"],output["Schematic"]["Height"],output["Schematic"]["Length"])
+
+            output["Schematic"]["Blocks"]["Data"] = nbtlib.ByteArray(chunk[file_num])
+
+            output["Schematic"]["Offset"] = nbtlib.IntArray(chunk_offset[file_num])
+
+            output_location = (
+                output_directory + "/" + output_name + str(file_num) + ".schem"
+            )
+
+            if not os.path.isdir(output_directory):
+                os.mkdir(output_directory)
+
+            output.save(output_location)
 
 
 def main():
