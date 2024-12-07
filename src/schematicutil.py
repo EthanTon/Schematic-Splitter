@@ -41,6 +41,11 @@ def get_offset(
     return (offsetX, offsetY, offsetZ)
 
 
+def get_index(x, y, z, width, length):
+    """Calculate the correct index in the block array using full dimensions"""
+    return int(x + z * width + y * width * length)
+
+
 def get_local_coordinate(index: int, width: int, length: int) -> Tuple[int, int, int]:
     """
     Convert linear index to local coordinates.
@@ -125,3 +130,14 @@ def get_global_coordinates(
         relativeCoordinates[1] + originY,
         relativeCoordinates[2] + originZ,
     )
+
+
+def swap_palette(source_palette):
+    palette = {}
+    for value, block in source_palette.items():
+        try:
+            palette[block] = int(value)
+        except (ValueError, TypeError):
+            # Keep original value if conversion fails
+            palette[block] = value
+    return palette
