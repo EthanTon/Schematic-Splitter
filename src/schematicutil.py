@@ -1,5 +1,5 @@
 import nbtlib
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 
 
 def load_schematic(filename: str) -> Optional[nbtlib.File]:

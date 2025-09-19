@@ -1,8 +1,10 @@
 # schematic_splitter.py
 from math import ceil
 import os
+import argparse
 from numpy import double
 from typing import Dict, List, Tuple, Optional
+
 import nbtlib
 import schematicutil
 import varintIterator
@@ -293,66 +295,93 @@ def write_chunks(
         output.save(output_location)
 
 
-class SchematicSplitter:
-    def __init__(self, block_limit: int):
-        self.block_limit = block_limit
+def split_schematic(
+    filename: str,
+    output_directory: str = "Output",
+    output_name: str = "Out",
+    block_limit: int = 150000,
+):
+    """Split a schematic file into smaller chunks based on block limit."""
+    # Load source file and get dimensions
+    source_file = schematicutil.load_schematic(filename)
+    source_dims = tuple(map(int, schematicutil.get_dimension(source_file)))
+    source_offset = tuple(map(int, schematicutil.get_offset(source_file)))
 
-    def split_schematic(
-        self, filename: str, output_directory: str = "Output", output_name: str = "Out"
-    ):
-        """Split a schematic file into smaller chunks based on block limit."""
-        # Load source file and get dimensions
-        source_file = schematicutil.load_schematic(filename)
-        source_dims = tuple(map(int, schematicutil.get_dimension(source_file)))
-        source_offset = tuple(map(int, schematicutil.get_offset(source_file)))
+    # Calculate chunk dimensions
+    max_chunk_dims = calculate_chunk_dimensions(*source_dims, block_limit)
+    chunk_width = int(ceil(source_dims[0] / max_chunk_dims[0]))
+    chunk_length = int(ceil(source_dims[2] / max_chunk_dims[2]))
 
-        # Calculate chunk dimensions
-        max_chunk_dims = calculate_chunk_dimensions(*source_dims, self.block_limit)
-        chunk_width = int(ceil(source_dims[0] / max_chunk_dims[0]))
-        chunk_length = int(ceil(source_dims[2] / max_chunk_dims[2]))
+    # Process entities
+    source_entities = schematicutil.get_entities(source_file)
+    chunk_entities = process_entities(
+        source_entities, max_chunk_dims, chunk_width, chunk_length
+    )
 
-        # Process entities
-        source_entities = schematicutil.get_entities(source_file)
-        chunk_entities = process_entities(
-            source_entities, max_chunk_dims, chunk_width, chunk_length
-        )
+    # Process block entities
+    source_block_entities = schematicutil.get_block_data(source_file)["BlockEntities"]
+    chunk_block_entities = process_block_entities(
+        source_block_entities, max_chunk_dims, chunk_width, chunk_length
+    )
 
-        # Process block entities
-        source_block_entities = schematicutil.get_block_data(source_file)[
-            "BlockEntities"
-        ]
-        chunk_block_entities = process_block_entities(
-            source_block_entities, max_chunk_dims, chunk_width, chunk_length
-        )
+    # Process chunk data
+    source_blocks = schematicutil.get_block_data(source_file)
+    source_biomes = schematicutil.get_biome_data(source_file)
+    chunk_data = process_chunk_data(
+        source_blocks,
+        source_biomes,
+        max_chunk_dims,
+        source_dims,
+        source_offset,
+        chunk_width,
+        chunk_length,
+    )
 
-        # Process chunk data
-        source_blocks = schematicutil.get_block_data(source_file)
-        source_biomes = schematicutil.get_biome_data(source_file)
-        chunk_data = process_chunk_data(
-            source_blocks,
-            source_biomes,
-            max_chunk_dims,
-            source_dims,
-            source_offset,
-            chunk_width,
-            chunk_length,
-        )
-
-        # Write chunks to files
-        write_chunks(
-            source_file,
-            chunk_data,
-            chunk_entities,
-            chunk_block_entities,
-            output_directory,
-            output_name,
-        )
+    # Write chunks to files
+    write_chunks(
+        source_file,
+        chunk_data,
+        chunk_entities,
+        chunk_block_entities,
+        output_directory,
+        output_name,
+    )
 
 
 def main():
-    block_limit = int(input("Set block limit: "))
-    splitter = SchematicSplitter(block_limit)
-    splitter.split_schematic(input("Input filename(.schem): "))
+    parser = argparse.ArgumentParser(
+        description="Split a schematic file into smaller chunks."
+    )
+    parser.add_argument(
+        "source_file", type=str, help="Path to the .schem file to split."
+    )
+    parser.add_argument(
+        "--output_directory",
+        type=str,
+        default="Output",
+        help="Directory to save output chunks.",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default="Out",
+        help="Base name for output chunk files.",
+    )
+    parser.add_argument(
+        "--block_limit",
+        type=int,
+        default=150000,
+        help="Maximum number of blocks per chunk.",
+    )
+
+    args = parser.parse_args()
+
+    split_schematic(
+        filename=args.source_file,
+        output_directory=args.output_directory,
+        output_name=args.output_file,
+        block_limit=args.block_limit,
+    )
 
 
 if __name__ == "__main__":

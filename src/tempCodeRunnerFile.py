@@ -1,1 +1,0 @@
-chunk_height = int(ceil(source_height / max_chunk_height))
