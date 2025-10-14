@@ -302,8 +302,19 @@ def split_schematic(
     block_limit: int = 150000,
 ):
     """Split a schematic file into smaller chunks based on block limit."""
+
     # Load source file and get dimensions
-    source_file = schematicutil.load_schematic(filename)
+    print(f"Loading schematic file: {filename}")
+    try:
+        source_file = schematicutil.load_schematic(filename)
+    except Exception as e:
+        raise ValueError(f"Failed to load schematic file: {e}")
+
+    if source_file is None:
+        raise ValueError("Invalid file extension. Please provide a .schem file.")
+
+    print("Schematic file loaded successfully.")
+
     source_dims = tuple(map(int, schematicutil.get_dimension(source_file)))
     source_offset = tuple(map(int, schematicutil.get_offset(source_file)))
 
@@ -313,18 +324,23 @@ def split_schematic(
     chunk_length = int(ceil(source_dims[2] / max_chunk_dims[2]))
 
     # Process entities
+
+    print("Processing entities...")
+
     source_entities = schematicutil.get_entities(source_file)
     chunk_entities = process_entities(
         source_entities, max_chunk_dims, chunk_width, chunk_length
     )
 
     # Process block entities
+    print("Processing block entities...")
     source_block_entities = schematicutil.get_block_data(source_file)["BlockEntities"]
     chunk_block_entities = process_block_entities(
         source_block_entities, max_chunk_dims, chunk_width, chunk_length
     )
 
     # Process chunk data
+    print("Processing chunk data...")
     source_blocks = schematicutil.get_block_data(source_file)
     source_biomes = schematicutil.get_biome_data(source_file)
     chunk_data = process_chunk_data(
@@ -338,6 +354,7 @@ def split_schematic(
     )
 
     # Write chunks to files
+    print("Writing chunks to output files...")
     write_chunks(
         source_file,
         chunk_data,
@@ -346,6 +363,8 @@ def split_schematic(
         output_directory,
         output_name,
     )
+
+    print("Schematic splitting completed.")
 
 
 def main():
@@ -376,12 +395,22 @@ def main():
 
     args = parser.parse_args()
 
-    split_schematic(
-        filename=args.source_file,
-        output_directory=args.output_directory,
-        output_name=args.output_file,
-        block_limit=args.block_limit,
-    )
+    # split_schematic(
+    #     filename=args.source_file,
+    #     output_directory=args.output_directory,
+    #     output_name=args.output_file,
+    #     block_limit=args.block_limit,
+    # )
+
+    try:
+        split_schematic(
+            filename=args.source_file,
+            output_directory=args.output_directory,
+            output_name=args.output_file,
+            block_limit=args.block_limit,
+        )
+    except Exception as e:
+        print(f"Error: {e}")
 
 
 if __name__ == "__main__":

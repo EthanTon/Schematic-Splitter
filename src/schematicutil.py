@@ -14,21 +14,32 @@ def load_schematic(filename: str) -> Optional[nbtlib.File]:
     """
     if filename.split(".")[-1] != "schem":
         return None
-    return nbtlib.load(filename, gzipped=True)
+
+    loaded_file = nbtlib.load(filename, gzipped=True)
+
+    if "Schematic" not in loaded_file:
+        raise ValueError("The provided file does not contain a 'Schematic' root tag.")
+
+    return loaded_file
 
 
 def get_block_data(file: nbtlib.tag.Compound) -> nbtlib.tag.Compound:
     return file["Schematic"]["Blocks"]
 
+
 def get_biome_data(file: nbtlib.tag.Compound) -> nbtlib.tag.Compound:
     if "Biomes" in file["Schematic"]:
         return file["Schematic"]["Biomes"]
-    else: return None
+    else:
+        return None
+
 
 def get_entities(file: nbtlib.tag.List) -> nbtlib.tag.List:
-    if "Entities" in  file["Schematic"]:
+    if "Entities" in file["Schematic"]:
         return file["Schematic"]["Entities"]
-    else: return nbtlib.List([])
+    else:
+        return nbtlib.List([])
+
 
 def get_dimension(
     file: nbtlib.tag.Compound,
