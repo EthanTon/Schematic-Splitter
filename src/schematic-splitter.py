@@ -1,8 +1,7 @@
 # schematic_splitter.py
 from math import ceil
 import os
-import json
-import tempfile
+
 import argparse
 from typing import Dict, List, Tuple, Optional, Set
 
@@ -16,6 +15,7 @@ from amulet_nbt import (
     CompoundTag,
     ListTag,
 )
+from tqdm import tqdm
 
 import schematicutil
 import varintIterator
@@ -39,6 +39,13 @@ def is_air_block(block_type: str) -> bool:
     """Check if a block type string is any form of air."""
     base = block_type.split("[")[0]
     return base in ALL_AIR_BLOCKS
+
+
+def chunk_is_all_air(palette: Dict[str, IntTag]) -> bool:
+    """Return True if every block type in the chunk palette is a form of air."""
+    if not palette:
+        return True
+    return all(is_air_block(block_type) for block_type in palette)
 
 
 def calculate_chunk_dimensions(
@@ -77,7 +84,7 @@ def process_entities(
     chunk_entities: Dict[int, List] = {}
     max_cw, max_ch, max_cl = max_chunk_dims
 
-    for item in source_entities:
+    for item in tqdm(source_entities, desc="  Entities", unit="ent", leave=True):
         pos = item["Pos"]
         sx, sy, sz = float(pos[0]), float(pos[1]), float(pos[2])
 
@@ -111,7 +118,9 @@ def process_block_entities(
     chunk_block_entities: Dict[int, List] = {}
     max_cw, max_ch, max_cl = max_chunk_dims
 
-    for item in source_block_entities:
+    for item in tqdm(
+        source_block_entities, desc="  Block entities", unit="be", leave=True
+    ):
         pos = item["Pos"]
         sx, sy, sz = int(pos[0]), int(pos[1]), int(pos[2])
 
@@ -137,9 +146,17 @@ def process_chunk_data(
     chunk_length: int,
     ignore_blocks: Optional[Set[str]] = None,
 ) -> Tuple[Dict, ...]:
-    source_width, _, source_length = source_dims
+    """Process blocks, palette, and biome data into chunks.
+
+    Args:
+        ignore_blocks: Set of base block names (e.g. "minecraft:stone") to replace
+                       with air in the output chunks.
+    """
+    source_width, source_height, source_length = source_dims
     src_ox, src_oy, src_oz = source_offset
     max_cw, max_ch, max_cl = max_chunk_dims
+
+    total_blocks = source_width * source_height * source_length
 
     chunk: Dict[int, List[int]] = {0: []}
     chunk_palette: Dict[int, Dict[str, IntTag]] = {0: {}}
@@ -153,11 +170,31 @@ def process_chunk_data(
     if has_biomes:
         chunk_biomes = {0: []}
         chunk_biomes_palette = {0: {}}
-        biome_data = bytes(b & 0xFF for b in source_biomes["Data"])
+        raw_biome = source_biomes["Data"]
+        biome_data = bytes(
+            b & 0xFF
+            for b in tqdm(
+                raw_biome,
+                desc="  Loading biome data",
+                unit="B",
+                unit_scale=True,
+                leave=True,
+            )
+        )
         source_biome_palette = schematicutil.swap_palette(source_biomes["Palette"])
         biome_iter = varintIterator.VarIntIterator(biome_data)
 
-    block_data = bytes(b & 0xFF for b in source_blocks["Data"])
+    raw_blocks = source_blocks["Data"]
+    block_data = bytes(
+        b & 0xFF
+        for b in tqdm(
+            raw_blocks,
+            desc="  Loading block data",
+            unit="B",
+            unit_scale=True,
+            leave=True,
+        )
+    )
     source_palette = schematicutil.swap_palette(source_blocks["Palette"])
     block_iter = varintIterator.VarIntIterator(block_data)
 
@@ -168,6 +205,10 @@ def process_chunk_data(
             base_name = block_type.split("[")[0]
             if base_name in ignore_blocks:
                 ignored_source_ids.add(src_id)
+
+    progress = tqdm(
+        total=total_blocks, desc="  Blocks", unit="blk", unit_scale=True, leave=True
+    )
 
     source_index = 0
     while block_iter.has_next():
@@ -241,6 +282,9 @@ def process_chunk_data(
             biome_iter.has_next()
 
         source_index += 1
+        progress.update(1)
+
+    progress.close()
 
     return (
         chunk,
@@ -252,52 +296,81 @@ def process_chunk_data(
     )
 
 
-def chunk_is_all_air(palette: Dict[str, IntTag]) -> bool:
-    """Return True if every block type in the chunk palette is a form of air."""
-    if not palette:
-        return True
-    return all(is_air_block(block_type) for block_type in palette)
-
-
 def export_entities_file(
+    source_file: amulet_nbt.NamedTag,
     chunk_entities: Dict[int, List],
     chunk_block_entities: Dict[int, List],
     chunk_offsets: Dict[int, List[int]],
+    chunk_dimensions: Dict[int, List[int]],
     output_directory: str,
     output_name: str,
-):
-    """Export all entities and block entities to a JSON file."""
+) -> List[str]:
+    """Export entities and block entities as separate schematic files.
+
+    Each chunk that contains entities or block entities gets its own .schem
+    file with all-air blocks and the entities embedded.
+
+    Returns:
+        List of written entity schematic file paths.
+    """
     os.makedirs(output_directory, exist_ok=True)
 
-    all_entities = []
+    root = source_file.compound
+    schematic = root["Schematic"]
+    blocks = schematic["Blocks"]
+    has_biomes = "Biomes" in schematic
 
-    for file_num, ents in chunk_entities.items():
+    # Collect all chunk indices that have any entities
+    entity_chunks = sorted(
+        set(chunk_entities.keys()) | set(chunk_block_entities.keys())
+    )
+
+    written_files: List[str] = []
+    output_index = 0
+
+    for file_num in tqdm(
+        entity_chunks, desc="  Entity schematics", unit="chunk", leave=True
+    ):
+        dims = chunk_dimensions.get(file_num)
+        if dims is None:
+            continue
+        w, h, l = dims[0], dims[1], dims[2]
+
+        schematic["Width"] = ShortTag(w)
+        schematic["Height"] = ShortTag(h)
+        schematic["Length"] = ShortTag(l)
+
+        # Entities
+        e_list = chunk_entities.get(file_num)
+        schematic["Entities"] = ListTag(e_list) if e_list else ListTag()
+
+        be_list = chunk_block_entities.get(file_num)
+        blocks["BlockEntities"] = ListTag(be_list) if be_list else ListTag()
+
+        # All-air block data
+        air_palette = {AIR_BLOCK: IntTag(0)}
+        air_data = [0] * (w * h * l)
+        blocks["Data"] = ByteArrayTag(varintWriter.write(air_data, w, h, l))
+        blocks["Palette"] = CompoundTag(air_palette)
+
+        # Biomes (minimal placeholder so the file is valid)
+        if has_biomes:
+            biomes = schematic["Biomes"]
+            biomes["Data"] = ByteArrayTag(varintWriter.write(air_data, w, h, l))
+            biomes["Palette"] = CompoundTag({"minecraft:plains": IntTag(0)})
+
         offset = chunk_offsets.get(file_num, [0, 0, 0])
-        for ent in ents:
-            entry = {
-                "type": "entity",
-                "chunk": file_num,
-                "chunk_offset": offset,
-                "data": str(ent),
-            }
-            all_entities.append(entry)
+        schematic["Offset"] = IntArrayTag(offset)
 
-    for file_num, bents in chunk_block_entities.items():
-        offset = chunk_offsets.get(file_num, [0, 0, 0])
-        for bent in bents:
-            entry = {
-                "type": "block_entity",
-                "chunk": file_num,
-                "chunk_offset": offset,
-                "data": str(bent),
-            }
-            all_entities.append(entry)
+        output_location = os.path.join(
+            output_directory, f"{output_name}_entities{output_index}.schem"
+        )
+        source_file.save_to(output_location, compressed=True)
+        written_files.append(output_location)
+        output_index += 1
 
-    output_path = os.path.join(output_directory, f"{output_name}_entities.json")
-    with open(output_path, "w") as f:
-        json.dump(all_entities, f, indent=2)
-
-    print(f"Exported {len(all_entities)} entities to {output_path}")
+    print(f"Exported entities to {len(written_files)} schematic file(s).")
+    return written_files
 
 
 def write_chunks(
@@ -310,6 +383,7 @@ def write_chunks(
     skip_air: bool = False,
     export_entities: bool = False,
 ) -> List[str]:
+    """Write processed chunks to output files."""
     (
         chunk,
         chunk_palette,
@@ -328,8 +402,11 @@ def write_chunks(
 
     written_files: List[str] = []
     skipped_air = 0
+    output_index = 0
 
-    for file_num in chunk:
+    file_nums = list(chunk.keys())
+
+    for file_num in tqdm(file_nums, desc="  Writing chunks", unit="chunk", leave=True):
         # -a: skip chunks that are entirely air
         if skip_air and chunk_is_all_air(chunk_palette[file_num]):
             skipped_air += 1
@@ -368,10 +445,11 @@ def write_chunks(
         schematic["Offset"] = IntArrayTag(chunk_offset[file_num])
 
         output_location = os.path.join(
-            output_directory, f"{output_name}{file_num}.schem"
+            output_directory, f"{output_name}{output_index}.schem"
         )
         source_file.save_to(output_location, compressed=True)
         written_files.append(output_location)
+        output_index += 1
 
     if skipped_air > 0:
         print(f"Skipped {skipped_air} air-only chunk(s).")
@@ -389,8 +467,9 @@ def resplit_oversized(
     ignore_blocks: Optional[Set[str]] = None,
     export_entities: bool = False,
 ):
+    """Re-split any output files that exceed max_file_size (in bytes)."""
     iteration = 0
-    max_iterations = 10  # safety cap to prevent infinite recursion
+    max_iterations = 10
 
     while iteration < max_iterations:
         oversized = [f for f in written_files if os.path.getsize(f) > max_file_size]
@@ -405,12 +484,13 @@ def resplit_oversized(
         )
 
         new_written: List[str] = []
-        for filepath in written_files:
+        for filepath in tqdm(
+            written_files, desc=f"  Re-split pass {iteration}", unit="file", leave=True
+        ):
             if filepath not in oversized:
                 new_written.append(filepath)
                 continue
 
-            # Re-split the oversized file into a temp sub-directory
             base = os.path.splitext(os.path.basename(filepath))[0]
             sub_dir = os.path.join(output_directory, f"_resplit_{base}")
 
@@ -423,32 +503,28 @@ def resplit_oversized(
                     skip_air=skip_air,
                     ignore_blocks=ignore_blocks,
                     export_entities=export_entities,
-                    max_file_size=None,  # don't recurse here, we loop externally
+                    max_file_size=None,
                 )
             except Exception as e:
                 print(f"Warning: could not re-split {filepath}: {e}")
                 new_written.append(filepath)
                 continue
 
-            # Move the sub-files back into the main output directory and
-            # remove the original oversized file
             for sf in sub_files:
                 dest = os.path.join(output_directory, os.path.basename(sf))
-                # Avoid name collisions
-                counter = 0
+                c = 0
                 while os.path.exists(dest):
-                    counter += 1
+                    c += 1
                     name, ext = os.path.splitext(os.path.basename(sf))
-                    dest = os.path.join(output_directory, f"{name}_{counter}{ext}")
+                    dest = os.path.join(output_directory, f"{name}_{c}{ext}")
                 os.rename(sf, dest)
                 new_written.append(dest)
 
-            # Clean up
             os.remove(filepath)
             try:
                 os.rmdir(sub_dir)
             except OSError:
-                pass  # directory not empty (e.g. entity exports), that's fine
+                pass
 
         written_files = new_written
         block_limit = new_block_limit
@@ -472,6 +548,23 @@ def split_schematic(
     export_entities: bool = False,
     max_file_size: Optional[int] = None,
 ) -> List[str]:
+    """Split a schematic file into smaller chunks based on block limit.
+
+    Args:
+        filename: Path to the .schem file.
+        output_directory: Directory for output files.
+        output_name: Base name for output chunk files.
+        block_limit: Maximum blocks per chunk.
+        skip_air: If True, skip writing chunks that contain only air.
+        ignore_blocks: Set of block names to replace with air.
+        export_entities: If True, export entities to a separate JSON file
+                         and strip them from the .schem outputs.
+        max_file_size: If set, re-split any output file exceeding this many
+                       bytes until all files are under the limit.
+
+    Returns:
+        List of written output file paths.
+    """
     print(f"Loading schematic file: {filename}")
     try:
         source_file = schematicutil.load_schematic(filename)
@@ -486,10 +579,22 @@ def split_schematic(
     source_dims = schematicutil.get_dimension(source_file)
     source_offset = schematicutil.get_offset(source_file)
 
+    total_blocks = source_dims[0] * source_dims[1] * source_dims[2]
+    print(
+        f"Schematic: {source_dims[0]}x{source_dims[1]}x{source_dims[2]} "
+        f"({total_blocks:,} blocks)"
+    )
+
     # Calculate chunk dimensions
     max_chunk_dims = calculate_chunk_dimensions(*source_dims, block_limit)
     chunk_width = ceil(source_dims[0] / max_chunk_dims[0])
+    chunk_height = ceil(source_dims[1] / max_chunk_dims[1])
     chunk_length = ceil(source_dims[2] / max_chunk_dims[2])
+    num_chunks = chunk_width * chunk_height * chunk_length
+    print(
+        f"Chunk size: {max_chunk_dims[0]}x{max_chunk_dims[1]}x{max_chunk_dims[2]} "
+        f"-> {num_chunks} chunk(s)"
+    )
 
     # Process entities
     print("Processing entities...")
@@ -506,7 +611,7 @@ def split_schematic(
     )
 
     # Process chunk data
-    print("Processing chunk data...")
+    print("Processing block data...")
     source_blocks = schematicutil.get_block_data(source_file)
     source_biomes = schematicutil.get_biome_data(source_file)
     chunk_data = process_chunk_data(
@@ -522,12 +627,14 @@ def split_schematic(
 
     # Export entities to separate file if requested
     if export_entities:
-        print("Exporting entities to separate file...")
-        _, _, chunk_offset, *_ = chunk_data
+        print("Exporting entities to separate schematics...")
+        _, _, chunk_offset, chunk_dimensions_data, *_ = chunk_data
         export_entities_file(
+            source_file,
             chunk_entities,
             chunk_block_entities,
             chunk_offset,
+            chunk_dimensions_data,
             output_directory,
             output_name,
         )
@@ -558,11 +665,21 @@ def split_schematic(
             export_entities=export_entities,
         )
 
-    print("Schematic splitting completed.")
+    print(f"Done -- wrote {len(written_files)} chunk file(s).")
     return written_files
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
 def parse_size(value: str) -> int:
+    """Parse a human-readable file size string into bytes.
+
+    Supports suffixes: B, KB, MB, GB (case-insensitive).
+    Plain integers are treated as bytes.
+    """
     value = value.strip().upper()
     multipliers = {
         "B": 1,
@@ -655,7 +772,7 @@ def main():
     max_file_size: Optional[int] = None
     if args.max_file_size:
         max_file_size = parse_size(args.max_file_size)
-        print(f"Max output file size: {max_file_size} bytes")
+        print(f"Max output file size: {max_file_size:,} bytes")
 
     try:
         split_schematic(
