@@ -1,69 +1,56 @@
-import nbtlib
-from typing import Tuple, Optional
+import amulet_nbt
+from amulet_nbt import CompoundTag, ListTag, IntArrayTag
+from typing import Tuple, Optional, Dict
 
 
-def load_schematic(filename: str) -> Optional[nbtlib.File]:
+def load_schematic(filename: str) -> Optional[amulet_nbt.NamedTag]:
     """
     Load a schematic file and return its NBT data structure.
 
     Args:
-        filename (str): Path to the .schem file
+        filename: Path to the .schem file
 
     Returns:
-        nbtlib.File: Loaded NBT file object, or None if file extension is incorrect
+        NamedTag or None if file extension is incorrect
     """
-    if filename.split(".")[-1] != "schem":
+    if not filename.endswith(".schem"):
         return None
 
-    loaded_file = nbtlib.load(filename, gzipped=True)
+    named_tag = amulet_nbt.load(filename, compressed=True)
 
-    if "Schematic" not in loaded_file:
+    if "Schematic" not in named_tag.compound:
         raise ValueError("The provided file does not contain a 'Schematic' root tag.")
 
-    return loaded_file
+    return named_tag
 
 
-def get_block_data(file: nbtlib.tag.Compound) -> nbtlib.tag.Compound:
-    return file["Schematic"]["Blocks"]
+def get_block_data(file: amulet_nbt.NamedTag) -> CompoundTag:
+    return file.compound["Schematic"]["Blocks"]
 
 
-def get_biome_data(file: nbtlib.tag.Compound) -> nbtlib.tag.Compound:
-    if "Biomes" in file["Schematic"]:
-        return file["Schematic"]["Biomes"]
-    else:
-        return None
+def get_biome_data(file: amulet_nbt.NamedTag) -> Optional[CompoundTag]:
+    schematic = file.compound["Schematic"]
+    return schematic["Biomes"] if "Biomes" in schematic else None
 
 
-def get_entities(file: nbtlib.tag.List) -> nbtlib.tag.List:
-    if "Entities" in file["Schematic"]:
-        return file["Schematic"]["Entities"]
-    else:
-        return nbtlib.List([])
+def get_entities(file: amulet_nbt.NamedTag) -> ListTag:
+    schematic = file.compound["Schematic"]
+    return schematic["Entities"] if "Entities" in schematic else ListTag()
 
 
-def get_dimension(
-    file: nbtlib.tag.Compound,
-) -> Tuple[nbtlib.tag.Short, nbtlib.tag.Short, nbtlib.tag.Short]:
-    width = file["Schematic"]["Width"]
-    height = file["Schematic"]["Height"]
-    length = file["Schematic"]["Length"]
-
-    return (width, height, length)
+def get_dimension(file: amulet_nbt.NamedTag) -> Tuple[int, int, int]:
+    schematic = file.compound["Schematic"]
+    return int(schematic["Width"]), int(schematic["Height"]), int(schematic["Length"])
 
 
-def get_offset(
-    file: nbtlib.tag.Compound,
-) -> Tuple[nbtlib.tag.Int, nbtlib.tag.Int, nbtlib.tag.Int]:
-    offsetX = file["Schematic"]["Offset"][0]
-    offsetY = file["Schematic"]["Offset"][1]
-    offsetZ = file["Schematic"]["Offset"][2]
-
-    return (offsetX, offsetY, offsetZ)
+def get_offset(file: amulet_nbt.NamedTag) -> Tuple[int, int, int]:
+    offset = file.compound["Schematic"]["Offset"]
+    return int(offset[0]), int(offset[1]), int(offset[2])
 
 
-def get_index(x, y, z, width, length):
-    """Calculate the correct index in the block array using full dimensions"""
-    return int(x + z * width + y * width * length)
+def get_index(x: int, y: int, z: int, width: int, length: int) -> int:
+    """Calculate the linear index from chunk grid coordinates."""
+    return x + z * width + y * width * length
 
 
 def get_local_coordinate(index: int, width: int, length: int) -> Tuple[int, int, int]:
@@ -71,17 +58,17 @@ def get_local_coordinate(index: int, width: int, length: int) -> Tuple[int, int,
     Convert linear index to local coordinates.
 
     Args:
-        index (int): Linear index in the schematic data
-        width (int): Width of the schematic
-        length (int): Length of the schematic
+        index: Linear index in the schematic data
+        width: Width of the schematic
+        length: Length of the schematic
 
     Returns:
-        Tuple[int, int, int]: (x, y, z) local coordinates
+        (x, y, z) local coordinates
     """
-    localY = int(index / (width * length))
-    localZ = int((index % (width * length)) / width)
-    localX = int((index % (width * length)) % width)
-    return (localX, localY, localZ)
+    wl = width * length
+    y, remainder = divmod(index, wl)
+    z, x = divmod(remainder, width)
+    return x, y, z
 
 
 def get_relative_coordinates(
@@ -92,26 +79,9 @@ def get_relative_coordinates(
     offsetY: int = 0,
     offsetZ: int = 0,
 ) -> Tuple[int, int, int]:
-    """
-    Get coordinates relative to offset.
-
-    Args:
-        index (int): Linear index in the schematic data
-        width (int): Width of the schematic
-        length (int): Length of the schematic
-        offsetX (int): X-axis offset
-        offsetY (int): Y-axis offset
-        offsetZ (int): Z-axis offset
-
-    Returns:
-        Tuple[int, int, int]: (x, y, z) relative coordinates
-    """
-    localCoordinates = get_local_coordinate(index, width, length)
-    return (
-        localCoordinates[0] + offsetX,
-        localCoordinates[1] + offsetY,
-        localCoordinates[2] + offsetZ,
-    )
+    """Get coordinates relative to offset."""
+    x, y, z = get_local_coordinate(index, width, length)
+    return x + offsetX, y + offsetY, z + offsetZ
 
 
 def get_global_coordinates(
@@ -125,39 +95,11 @@ def get_global_coordinates(
     originY: int = 0,
     originZ: int = 0,
 ) -> Tuple[int, int, int]:
-    """
-    Get global coordinates including offset and origin.
-
-    Args:
-        index (int): Linear index in the schematic data
-        width (int): Width of the schematic
-        length (int): Length of the schematic
-        offsetX (int): X-axis offset
-        offsetY (int): Y-axis offset
-        offsetZ (int): Z-axis offset
-        originX (int): X-axis origin
-        originY (int): Y-axis origin
-        originZ (int): Z-axis origin
-
-    Returns:
-        Tuple[int, int, int]: (x, y, z) global coordinates
-    """
-    relativeCoordinates = get_relative_coordinates(
-        index, width, length, offsetX, offsetY, offsetZ
-    )
-    return (
-        relativeCoordinates[0] + originX,
-        relativeCoordinates[1] + originY,
-        relativeCoordinates[2] + originZ,
-    )
+    """Get global coordinates including offset and origin."""
+    x, y, z = get_relative_coordinates(index, width, length, offsetX, offsetY, offsetZ)
+    return x + originX, y + originY, z + originZ
 
 
-def swap_palette(source_palette):
-    palette = {}
-    for value, block in source_palette.items():
-        try:
-            palette[block] = int(value)
-        except (ValueError, TypeError):
-            # Keep original value if conversion fails
-            palette[block] = value
-    return palette
+def swap_palette(source_palette) -> Dict[int, str]:
+    """Swap palette from {name: IntTag(id)} to {id: name}."""
+    return {int(tag): name for name, tag in source_palette.items()}
